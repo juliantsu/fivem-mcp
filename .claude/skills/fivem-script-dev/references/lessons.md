@@ -30,6 +30,12 @@ file is its inbox.
 
 ## Entries
 
+### Never return a table whose keys mix numbers and strings through the bridge
+- **Date**: 2026-10-23 · **Area**: bridge
+- **Tried**: fivem_run_code returning a list of every object from GetGamePool within 15 m (more than MAX_KEYS = 60 entries)
+- **Happened**: the client crashed with `msgpack::v1::type_error` in `nui-resources.dll` -- the old marshal truncated the array and added a `'…'` string key, and the NUI callback's msgpack -> JSON step throws on a map with non-string keys, killing the game
+- **Instead**: marshal.lua now keeps arrays as arrays (truncation note as the last element) and stringifies all other keys; the resource needs a restart to load it
+
 ### A cold fivem_launch can die at the Rockstar handoff -- relaunch with force
 - **Date**: 2026-08-08 · **Area**: tooling
 - **Tried**: fivem_launch with waitMs 180000 as the first game start after a PC reboot

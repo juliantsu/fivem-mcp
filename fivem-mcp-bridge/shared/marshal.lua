@@ -49,15 +49,41 @@ function AgentMarshal.sanitize(value, depth, seen)
     end
     seen[value] = true
 
-    local out, keys = {}, 0
+    -- msgpack -> JSON in nui-resources.dll throws (and takes the whole client
+    -- down) on a map whose keys are not all strings, e.g. a truncated array with
+    -- a '…' key added. So: a real array stays an array, everything else gets
+    -- string keys only.
+    local n = #value
+    local isArray = n > 0
+    if isArray then
+        for k in pairs(value) do
+            if type(k) ~= 'number' or k < 1 or k > n or k % 1 ~= 0 then
+                isArray = false
+                break
+            end
+        end
+    end
+
+    local out = {}
+    if isArray then
+        for i = 1, math.min(n, AgentMarshal.MAX_KEYS) do
+            local v = value[i]
+            out[i] = v == nil and '<nil>' or AgentMarshal.sanitize(v, depth - 1, seen)
+        end
+        if n > AgentMarshal.MAX_KEYS then
+            out[#out + 1] = ('… %d more entries omitted'):format(n - AgentMarshal.MAX_KEYS)
+        end
+        return out
+    end
+
+    local keys = 0
     for k, v in pairs(value) do
         keys = keys + 1
         if keys > AgentMarshal.MAX_KEYS then
             out['…'] = ('more than %d entries, the rest was omitted'):format(AgentMarshal.MAX_KEYS)
             break
         end
-        local key = (type(k) == 'string' or type(k) == 'number') and k or tostring(k)
-        out[key] = AgentMarshal.sanitize(v, depth - 1, seen)
+        out[tostring(k)] = AgentMarshal.sanitize(v, depth - 1, seen)
     end
 
     return out
