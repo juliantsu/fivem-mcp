@@ -42,7 +42,8 @@
     "quality": 80,
     "timeoutMs": 15000,
     "saveDirectory": null,
-    "fallbackToPrimary": true
+    "fallbackToPrimary": true,
+    "method": "auto"
   },
   "txAdmin": {
     "enabled": false,

@@ -9,7 +9,9 @@ import { runTool, type ToolRunResult } from "../runTool.js";
 import { CAPTURE_SCRIPT } from "./script.js";
 
 /**
- * Grabs a whole display through the Windows desktop compositor.
+ * Captures the FiveM window -- read from the window itself via PrintWindow, so
+ * other windows in front of it do not matter -- or a whole display through the
+ * Windows desktop compositor.
  *
  * Deliberately not a bridge feature: a screenshot is a property of the
  * operating system, not of the game, so this never talks to the FiveM resource
@@ -50,9 +52,12 @@ export interface MatchedWindow {
   title: string;
 }
 
+export type CaptureMethod = "auto" | "window" | "screen";
+
 interface CaptureOptions {
   display?: string | number;
   crop?: "window" | "display";
+  method?: CaptureMethod;
   maxWidth?: number;
   format?: "jpeg" | "png";
   quality?: number;
@@ -74,6 +79,8 @@ export interface CaptureResult {
   brightest: number;
   /** Which DPI awareness the worker managed to claim; wrong bounds trace back to this. */
   dpiMode: string;
+  /** "print-window" = read from the window itself (occlusion-proof), "screen" = BitBlt of the desktop. */
+  method: string;
   /** How the display was picked: game-window, primary, primary-fallback, explicit-index, virtual-desktop. */
   source: string;
   /** What the bounds cover: "window" (the FiveM window), "display", or "all" (virtual desktop). */
@@ -92,9 +99,10 @@ export interface CaptureResult {
  * below defaults are typed as genuinely optional rather than asserted present.
  */
 interface ScriptSuccess
-  extends Omit<CaptureResult, "data" | "bytes" | "savedTo" | "note" | "display" | "matched" | "displays"> {
+  extends Omit<CaptureResult, "data" | "bytes" | "savedTo" | "note" | "display" | "matched" | "displays" | "method"> {
   ok: true;
   path: string;
+  method?: string;
   note?: string | null;
   display?: DisplayInfo | null;
   matched?: MatchedWindow | null;
@@ -168,6 +176,7 @@ export class ScreenCapture {
     const args = {
       display: options.display ?? "auto",
       crop: options.crop ?? "window",
+      method: options.method ?? settings.method,
       maxWidth: options.maxWidth ?? settings.maxWidth,
       format,
       quality: options.quality ?? settings.quality,
@@ -212,6 +221,7 @@ export class ScreenCapture {
       black: parsed.black,
       brightest: parsed.brightest,
       dpiMode: parsed.dpiMode,
+      method: parsed.method ?? "screen",
       source: parsed.source,
       crop: parsed.crop ?? "display",
       note: parsed.note ?? null,

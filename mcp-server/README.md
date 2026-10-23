@@ -261,11 +261,15 @@ here that can see what the game actually renders: the HUD, a NUI page, markers, 
 really opened. By default the image is **cropped to the game window**, precisely so other
 applications on that screen (chats, browsers, this very conversation) stay out of model
 context; when no FiveM window is found, the whole display is captured and the caption says so.
+The window is **read from the window itself** (`PrintWindow` with `PW_RENDERFULLCONTENT`), not
+from the screen, so the game does not have to be in front: it can sit behind a browser or a chat
+and the capture still shows the game. It only must not be minimised.
 
 | Parameter | Type | Description |
 |---|---|---|
 | `display` | `auto` \| `primary` \| `all` \| number, optional | `auto` (default) is the monitor the FiveM window is on, `all` the whole virtual desktop, a number one specific display — the indexes are listed in every answer |
 | `crop` | `window` \| `display`, optional | `window` (default) crops to the FiveM window; `display` keeps the whole monitor, for crash dialogs or the launcher next to the game. Only meaningful with `display: auto` |
+| `method` | `auto` \| `window` \| `screen`, optional | `window` reads the window's own surface, so windows in front of the game do not matter; `screen` copies the desktop as it looks; `auto` (default `screenshot.method`) tries the window and falls back to the screen. Whole-display captures always use the screen |
 | `maxWidth` | number, optional | Scale down to at most this width (default `screenshot.maxWidth`); `0` keeps the native resolution |
 | `format` | `jpeg` \| `png`, optional | jpeg for looking at a scene, png for reading small UI text (default `screenshot.format`) |
 | `quality` | number, optional | JPEG quality 1–100, ignored for png (default `screenshot.quality`) |
@@ -293,6 +297,11 @@ Two details that are easy to get wrong and are handled here:
   part of the desktop surface, so the frame comes back black. The tool samples a grid and says
   so, with the remedy: run FiveM windowed or borderless windowed. A locked session and a
   disconnected remote desktop look identical.
+- **Covered windows.** A desktop copy (BitBlt) shows whatever is on top, so a browser over the
+  game ends up in the picture. `PrintWindow` with `PW_RENDERFULLCONTENT` (Windows 8.1+) asks DWM
+  for the window's own surface instead, which works for a covered Direct3D window too
+  (~40 ms for 1920x1080). A minimised window renders nothing; `auto` then falls back to the
+  screen and the caption says so.
 
 Payload sizes, measured on a 3840x2160 display:
 
@@ -645,6 +654,7 @@ standalone npm install has neither and sets explicit paths.
 | `screenshot.timeoutMs` | `15000` | How long PowerShell gets before the capture is abandoned |
 | `screenshot.saveDirectory` | `null` | `null` = the OS temp folder; also the base for relative `savePath` values |
 | `screenshot.fallbackToPrimary` | `true` | Capture the primary display when no FiveM window is found, instead of failing |
+| `screenshot.method` | `auto` | `window` reads the game window itself (works behind other windows), `screen` copies the desktop, `auto` tries the window first |
 | `txAdmin.enabled` | `false` | `true` registers `fivem_server_console` and `fivem_server_command` |
 | `txAdmin.url` | `http://127.0.0.1:40120` | txAdmin panel origin; plain `http` off loopback logs a warning |
 | `txAdmin.username` | `null` | The dedicated admin account the MCP logs in as |
@@ -696,8 +706,10 @@ ENV overrides: `FIVEM_BRIDGE_PORT`, `FIVEM_BRIDGE_TOKEN`, `FIVEM_BRIDGE_CONFIG`,
   There is deliberately no filtering of content: for a Turing-complete language it would be
   theatre. Anyone who does not want the capability sets `code.enabled` to `false`, and the tool
   is then not registered.
-- **Screen capture.** `fivem_screenshot` photographs a whole monitor, not just the game window,
-  so anything else open on that screen is in the image and goes to the model. It is the only
+- **Screen capture.** By default `fivem_screenshot` reads only the game window itself, so other
+  windows on that screen stay out. A whole-display capture (`crop: "display"`, a display
+  selector, or the `screen` fallback) photographs the monitor as it looks, and anything else
+  open on that screen is then in the image and goes to the model. It is the only
   tool here that can see outside the game, and the only one not gated by the token, the origin
   check or the resource's ACE list — it never touches the bridge, so none of those apply.
   `screenshot.enabled: false` is the off switch, and the tool is then not registered. The

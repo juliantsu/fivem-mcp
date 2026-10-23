@@ -98,7 +98,15 @@ public static class FiveMAgentCapture {
   [DllImport("dwmapi.dll", EntryPoint = "DwmGetWindowAttribute")]
   private static extern int DwmGetWindowAttributeRect(IntPtr window, int attribute, out RECT value, int size);
   [DllImport("user32.dll")]
+  private static extern bool PrintWindow(IntPtr window, IntPtr hdc, uint flags);
+  [DllImport("user32.dll")]
   private static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
+
+  // PW_RENDERFULLCONTENT (Windows 8.1+) asks DWM for the window's own surface,
+  // which is what makes a window behind other windows capturable, Direct3D included.
+  public static bool Print(long window, IntPtr hdc) {
+    return PrintWindow(new IntPtr(window), hdc, 2);
+  }
   [DllImport("shcore.dll")]
   private static extern int SetProcessDpiAwareness(int value);
   [DllImport("user32.dll")]
@@ -160,6 +168,8 @@ public static class FiveMAgentCapture {
     public bool Foreground;
     public bool Minimised;
     public int Left; public int Top; public int Right; public int Bottom;
+    // GetWindowRect before the DWM trim: PrintWindow draws into this rectangle.
+    public int RawLeft; public int RawTop; public int RawRight; public int RawBottom;
   }
 
   public static List<Candidate> WindowsOf(int[] processIds) {
@@ -186,6 +196,8 @@ public static class FiveMAgentCapture {
       try { DwmGetWindowAttribute(window, 14, out cloaked, sizeof(int)); } catch { }
       if (cloaked != 0) return true;
 
+      RECT raw = rect;
+
       // The extended frame bounds exclude the invisible resize border and drop
       // shadow GetWindowRect includes, so a window crop has no dead margin.
       RECT ext;
@@ -201,7 +213,8 @@ public static class FiveMAgentCapture {
         Area = width * height,
         Foreground = (window == foreground),
         Minimised = IsIconic(window),
-        Left = rect.Left, Top = rect.Top, Right = rect.Right, Bottom = rect.Bottom
+        Left = rect.Left, Top = rect.Top, Right = rect.Right, Bottom = rect.Bottom,
+        RawLeft = raw.Left, RawTop = raw.Top, RawRight = raw.Right, RawBottom = raw.Bottom
       });
       return true;
     }, IntPtr.Zero);
@@ -255,12 +268,38 @@ if ($null -ne $opt.display -and "$($opt.display)" -ne '') { $mode = "$($opt.disp
 $cropMode = 'window'
 if ($null -ne $opt.crop -and "$($opt.crop)" -ne '') { $cropMode = "$($opt.crop)" }
 
+# 'window' reads the FiveM window itself (PrintWindow), so windows in front of
+# it do not end up in the picture; 'screen' reads the desktop (BitBlt); 'auto'
+# prefers the window and falls back to the screen.
+$method = 'auto'
+if ($null -ne $opt.method -and "$($opt.method)" -ne '') { $method = "$($opt.method)" }
+if ($method -ne 'window' -and $method -ne 'screen' -and $method -ne 'auto') {
+  Fail "Unknown capture method ""$method"". Use auto, window or screen."
+}
+if ($method -eq 'window' -and ($mode -ne 'auto' -or $cropMode -ne 'window')) {
+  Fail 'method: "window" captures only the FiveM window itself. It needs display: "auto" and crop: "window"; use method: "screen" for a whole display.'
+}
+
 $bounds = $null
 $chosen = $null
 $source = $mode
 $matched = $null
 $note = $null
 $crop = 'display'
+$best = $null
+$usePrint = $false
+$captureMethod = 'screen'
+
+# Clip the window rectangle to its display: CopyFromScreen reads the desktop
+# surface, and a window half off-screen has nothing to read there.
+function Get-ClippedWindowBounds($win, $disp) {
+  $wl = [Math]::Max([int]$win.left, [int]$disp.x)
+  $wt = [Math]::Max([int]$win.top, [int]$disp.y)
+  $wr = [Math]::Min([int]$win.right, [int]$disp.x + [int]$disp.width)
+  $wb = [Math]::Min([int]$win.bottom, [int]$disp.y + [int]$disp.height)
+  if ($wr - $wl -lt 50 -or $wb - $wt -lt 50) { return $null }
+  return @{ x = [int]$wl; y = [int]$wt; width = [int]($wr - $wl); height = [int]($wb - $wt) }
+}
 
 if ($mode -eq 'all') {
   $left = ($displays | ForEach-Object { $_.x } | Measure-Object -Minimum).Minimum
@@ -308,6 +347,10 @@ if ($mode -eq 'all') {
         top = [int]$c.Top
         right = [int]$c.Right
         bottom = [int]$c.Bottom
+        rawLeft = [int]$c.RawLeft
+        rawTop = [int]$c.RawTop
+        rawRight = [int]$c.RawRight
+        rawBottom = [int]$c.RawBottom
       }
     }
   }
@@ -327,6 +370,9 @@ if ($mode -eq 'all') {
 
   if ($null -eq $best) {
     $looked = ($patterns -join ', ')
+    if ($method -eq 'window') {
+      Fail "No FiveM window is open, so there is no window to capture (looked for a visible window of a process named like: $looked)."
+    }
     if ($opt.fallbackToPrimary) {
       $chosen = Get-Primary
       $source = 'primary-fallback'
@@ -346,20 +392,25 @@ if ($mode -eq 'all') {
     $source = 'game-window'
     $matched = @{ process = $best.process; pid = $best.pid; title = $best.title }
     if ($best.minimised) {
-      $note = 'The FiveM window is minimised, so the capture shows whatever else is on that screen rather than the game.'
+      # A minimised game renders nothing, so PrintWindow has no frame to read either.
+      if ($method -eq 'window') {
+        Fail 'The FiveM window is minimised and renders no frame. Restore it -- it can stay behind other windows, it just must not be minimised.'
+      }
+      $note = 'The FiveM window is minimised, so the capture shows whatever else is on that screen rather than the game. Restore it (it may stay behind other windows) to capture the game.'
     } elseif ($cropMode -eq 'window') {
-      # Clip the window rectangle to its display: CopyFromScreen reads the
-      # desktop surface, and a window half off-screen has nothing to read there.
-      # A minimised window is skipped above -- its rect is the bogus -32000 one.
-      $wl = [Math]::Max([int]$best.left, [int]$chosen.x)
-      $wt = [Math]::Max([int]$best.top, [int]$chosen.y)
-      $wr = [Math]::Min([int]$best.right, [int]$chosen.x + [int]$chosen.width)
-      $wb = [Math]::Min([int]$best.bottom, [int]$chosen.y + [int]$chosen.height)
-      if ($wr - $wl -ge 50 -and $wb - $wt -ge 50) {
-        $bounds = @{ x = [int]$wl; y = [int]$wt; width = [int]($wr - $wl); height = [int]($wb - $wt) }
+      if ($method -ne 'screen') {
+        # PrintWindow needs no clipping: it reads the window, not the desktop.
+        $bounds = @{ x = [int]$best.left; y = [int]$best.top; width = [int]($best.right - $best.left); height = [int]($best.bottom - $best.top) }
         $crop = 'window'
+        $usePrint = $true
       } else {
-        $note = 'The FiveM window rectangle is (almost) entirely off its display, so the whole display was captured instead.'
+        # A minimised window is skipped above -- its rect is the bogus -32000 one.
+        $bounds = Get-ClippedWindowBounds $best $chosen
+        if ($null -ne $bounds) {
+          $crop = 'window'
+        } else {
+          $note = 'The FiveM window rectangle is (almost) entirely off its display, so the whole display was captured instead.'
+        }
       }
     }
   }
@@ -377,12 +428,56 @@ if ($bounds.width -le 0 -or $bounds.height -le 0) {
 $shot = $null
 $final = $null
 try {
-  $shot = New-Object System.Drawing.Bitmap($bounds.width, $bounds.height, [System.Drawing.Imaging.PixelFormat]::Format24bppRgb)
-  $gfx = [System.Drawing.Graphics]::FromImage($shot)
-  try {
-    $gfx.CopyFromScreen($bounds.x, $bounds.y, 0, 0, (New-Object System.Drawing.Size($bounds.width, $bounds.height)), [System.Drawing.CopyPixelOperation]::SourceCopy)
-  } finally {
-    $gfx.Dispose()
+  if ($usePrint) {
+    $rw = [int]$best.rawRight - [int]$best.rawLeft
+    $rh = [int]$best.rawBottom - [int]$best.rawTop
+    $full = New-Object System.Drawing.Bitmap($rw, $rh, [System.Drawing.Imaging.PixelFormat]::Format24bppRgb)
+    $gfx = [System.Drawing.Graphics]::FromImage($full)
+    $hdc = $gfx.GetHdc()
+    try {
+      $printed = [FiveMAgentCapture]::Print([long]$best.handle, $hdc)
+    } finally {
+      $gfx.ReleaseHdc($hdc)
+      $gfx.Dispose()
+    }
+
+    if ($printed) {
+      # PrintWindow draws the whole GetWindowRect area; trim it to the frame bounds.
+      $ox = [int]$best.left - [int]$best.rawLeft
+      $oy = [int]$best.top - [int]$best.rawTop
+      if ($ox -eq 0 -and $oy -eq 0 -and $bounds.width -eq $rw -and $bounds.height -eq $rh) {
+        $shot = $full
+      } elseif ($ox -ge 0 -and $oy -ge 0 -and $ox + $bounds.width -le $rw -and $oy + $bounds.height -le $rh) {
+        $shot = $full.Clone((New-Object System.Drawing.Rectangle($ox, $oy, $bounds.width, $bounds.height)), $full.PixelFormat)
+        $full.Dispose()
+      } else {
+        $shot = $full
+        $bounds = @{ x = [int]$best.rawLeft; y = [int]$best.rawTop; width = $rw; height = $rh }
+      }
+      $captureMethod = 'print-window'
+    } else {
+      $full.Dispose()
+      if ($method -eq 'window') {
+        Fail 'Windows refused to render the FiveM window (PrintWindow failed). Use method: "screen" and bring the window to the front.'
+      }
+      $usePrint = $false
+      $bounds = Get-ClippedWindowBounds $best $chosen
+      if ($null -eq $bounds) {
+        $bounds = @{ x = $chosen.x; y = $chosen.y; width = $chosen.width; height = $chosen.height }
+        $crop = 'display'
+      }
+      $note = 'Reading the FiveM window directly failed, so it was captured from the screen instead: anything in front of the window is in the picture.'
+    }
+  }
+
+  if (-not $usePrint) {
+    $shot = New-Object System.Drawing.Bitmap($bounds.width, $bounds.height, [System.Drawing.Imaging.PixelFormat]::Format24bppRgb)
+    $gfx = [System.Drawing.Graphics]::FromImage($shot)
+    try {
+      $gfx.CopyFromScreen($bounds.x, $bounds.y, 0, 0, (New-Object System.Drawing.Size($bounds.width, $bounds.height)), [System.Drawing.CopyPixelOperation]::SourceCopy)
+    } finally {
+      $gfx.Dispose()
+    }
   }
 
   $maxWidth = 0
@@ -459,6 +554,7 @@ try {
     black = [bool]$black
     brightest = [int]$brightest
     dpiMode = [string]$dpiMode
+    method = [string]$captureMethod
     source = [string]$source
     crop = [string]$crop
     note = $note

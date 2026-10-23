@@ -27,11 +27,14 @@ export function registerScreenshot(
         "connected and you want to know why.\n\n" +
         "By default the image is cropped to the FiveM window, precisely so that whatever else " +
         "is open on that screen -- other applications, chats, browser windows -- stays out of " +
-        'the picture. Pass crop: "display" (or a display selector) when you genuinely need the ' +
-        "surroundings, e.g. a crash dialog or the launcher next to the game. When no FiveM " +
-        "window is found the whole display is captured and the caption says so. FiveM has to " +
-        "run windowed or borderless windowed: exclusive fullscreen bypasses the desktop " +
-        "compositor and yields a black frame, which this tool detects and tells you about.",
+        "the picture. The window is read from the window itself, not from the screen, so the " +
+        "game does not have to be in front: it can sit behind a browser or a chat and the " +
+        "capture still shows the game (it must not be minimised). Pass crop: \"display\" (or a " +
+        "display selector) when you genuinely need the surroundings, e.g. a crash dialog or the " +
+        "launcher next to the game; that reads the screen as it looks. When no FiveM window is " +
+        "found the whole display is captured and the caption says so. FiveM has to run windowed " +
+        "or borderless windowed: exclusive fullscreen yields a black frame, which this tool " +
+        "detects and tells you about.",
       inputSchema: {
         display: z
           .union([z.enum(["auto", "primary", "all"]), z.number().int().min(0).max(15)])
@@ -49,6 +52,15 @@ export function registerScreenshot(
             '"window" (default) crops the capture to the FiveM window so nothing else on the ' +
               'screen ends up in the image; "display" keeps the whole monitor. Only meaningful ' +
               'with display: "auto" -- naming a display is already a request for that whole screen.',
+          ),
+        method: z
+          .enum(["auto", "window", "screen"])
+          .optional()
+          .describe(
+            `How the game window is read (default ${settings.method}). "window" reads the ` +
+              "window's own surface, so other windows in front of the game do not matter; " +
+              '"screen" copies the desktop, overlapping windows included; "auto" tries the ' +
+              "window first and falls back to the screen.",
           ),
         maxWidth: z
           .number()
@@ -86,9 +98,9 @@ export function registerScreenshot(
           ),
       },
     },
-    async ({ display, crop, maxWidth, format, quality, savePath }) => {
+    async ({ display, crop, method, maxWidth, format, quality, savePath }) => {
       try {
-        const shot = await capture.capture({ display, crop, maxWidth, format, quality, savePath });
+        const shot = await capture.capture({ display, crop, method, maxWidth, format, quality, savePath });
         const base64 = shot.data.toString("base64");
         return image(base64, shot.mimeType, describe(shot));
       } catch (err) {
@@ -123,9 +135,13 @@ function describe(shot: CaptureResult): string {
     shot.width === shot.nativeWidth
       ? ""
       : `, scaled down from ${shot.nativeWidth}x${shot.nativeHeight}`;
+  const how =
+    shot.method === "print-window"
+      ? "read from the window itself, windows in front of it are not in the picture"
+      : "GDI BitBlt of the screen";
   lines.push(
     `Returned ${shot.width}x${shot.height} ${shot.format.toUpperCase()}, ` +
-      `${formatBytes(shot.bytes)}${downscaled} (GDI BitBlt, DPI awareness: ${shot.dpiMode}).`,
+      `${formatBytes(shot.bytes)}${downscaled} (${how}, DPI awareness: ${shot.dpiMode}).`,
   );
 
   if (shot.savedTo) lines.push(`Saved to ${shot.savedTo}`);
@@ -134,9 +150,12 @@ function describe(shot: CaptureResult): string {
   if (shot.black) {
     lines.push(
       `The frame is black (brightest sampled channel ${shot.brightest}/255). Windows cannot ` +
-        "read an exclusive-fullscreen Direct3D swapchain this way -- switch FiveM to windowed or " +
+        "read an exclusive-fullscreen Direct3D swapchain -- switch FiveM to windowed or " +
         "borderless windowed and capture again. A locked session or a disconnected remote " +
-        "desktop looks the same, and so does a genuinely black loading screen.",
+        "desktop looks the same, and so does a genuinely black loading screen." +
+        (shot.method === "print-window"
+          ? ' If the game is windowed, try method: "screen" with the window in front.'
+          : ""),
     );
   }
 

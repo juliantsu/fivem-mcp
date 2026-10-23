@@ -127,6 +127,13 @@ const configSchema = z.object({
       saveDirectory: z.string().nullable().default(null),
       /** Capture the primary display when no FiveM window is found, instead of failing. */
       fallbackToPrimary: z.boolean().default(true),
+      /**
+       * How the game window is read. "window" asks Windows for the window's own
+       * surface (PrintWindow), so it works while other windows cover the game;
+       * "screen" copies the desktop, like a normal screenshot; "auto" tries the
+       * window first and falls back to the screen.
+       */
+      method: z.enum(["auto", "window", "screen"]).default("auto"),
     })
     .prefault({}),
   txAdmin: z
